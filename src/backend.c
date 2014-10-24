@@ -94,18 +94,18 @@ void update_backend_weight(struct proxy *px)
 }
 
 /*
- * This function tries to find a running server for the proxy <px> following
- * the source hash method. Depending on the number of active/backup servers,
- * it will either look for active servers, or for backup servers.
- * If any server is found, it will be returned. If no valid server is found,
- * NULL is returned.
+ * This function tries to find the index of a server for the proxy
+ * <px> following the source hash method. The index returned points to
+ * a server in the structure used for map-based load balancing.  If
+ * any server is found, it will be returned. If no valid server is
+ * found, return -1
  */
-struct server *get_server_sh(struct proxy *px, const char *addr, int len)
+int get_server_index_sh(struct proxy *px, const char *addr, int len)
 {
 	unsigned int h, l;
 
 	if (px->lbprm.tot_weight == 0)
-		return NULL;
+		return -1;
 
 	l = h = 0;
 
@@ -118,10 +118,7 @@ struct server *get_server_sh(struct proxy *px, const char *addr, int len)
 		l += sizeof (int);
 	}
  hash_done:
-	if (px->lbprm.algo & BE_LB_LKUP_CHTREE)
-		return chash_get_server_hash(px, h);
-	else
-		return map_get_server_hash(px, h);
+	return (int) h % px->lbprm.tot_weight;
 }
 
 /*
@@ -171,7 +168,7 @@ struct server *get_server_uh(struct proxy *px, char *uri, int uri_len)
 		return map_get_server_hash(px, hash);
 }
 
-/* 
+/*
  * This function tries to find a running server for the proxy <px> following
  * the URL parameter hash method. It looks for a specific parameter in the
  * URL and hashes it to compute the server ID. This is useful to optimize
@@ -424,7 +421,7 @@ struct server *get_server_rch(struct session *s)
 	else
 		return map_get_server_hash(px, hash);
 }
- 
+
 /*
  * This function applies the load-balancing algorithm to the session, as
  * defined by the backend it is assigned to. The session is then marked as
@@ -455,7 +452,7 @@ int assign_server(struct session *s)
 
 	struct server *conn_slot;
 	int err;
-
+	int server_idx;
 #ifdef DEBUG_FULL
 	fprintf(stderr,"assign_server : s=%p\n",s);
 #endif
@@ -516,18 +513,27 @@ int assign_server(struct session *s)
 
 			switch (s->be->lbprm.algo & BE_LB_PARM) {
 			case BE_LB_HASH_SRC:
-				if (s->cli_addr.ss_family == AF_INET)
-					s->srv = get_server_sh(s->be,
-					                       (void *)&((struct sockaddr_in *)&s->cli_addr)->sin_addr,
-					                       4);
+				/* bcox redid all the indenting here instead of changing his editor... */
+				if (s->cli_addr.ss_family == AF_INET) {
+					server_idx = get_server_index_sh(s->be,
+									 (void *)&((struct sockaddr_in *)&s->cli_addr)->sin_addr,
+									 4);
+				}
 				else if (s->cli_addr.ss_family == AF_INET6)
-					s->srv = get_server_sh(s->be,
-					                       (void *)&((struct sockaddr_in6 *)&s->cli_addr)->sin6_addr,
-					                       16);
+					server_idx = get_server_index_sh(s->be,
+							       (void *)&((struct sockaddr_in6 *)&s->cli_addr)->sin6_addr,
+							       16);
 				else {
 					/* unknown IP family */
 					err = SRV_STATUS_INTERNAL;
 					goto out;
+				}
+				if (server_idx >= 0) {
+					s->be->lbprm.map.rr_idx = server_idx;
+					s->srv = map_get_server_rr(s->be, NULL);
+					// if we get null server, we use the original suggested connection
+					if (! s->srv)
+						s->srv = map_get_server_hash(s->be, server_idx);
 				}
 				break;
 
