@@ -118,7 +118,7 @@ int get_server_index_sh(struct proxy *px, const char *addr, int len)
 		l += sizeof (int);
 	}
  hash_done:
-	return (int) h % px->lbprm.tot_weight;
+	return (int) (h % px->lbprm.tot_weight);
 }
 
 /*
